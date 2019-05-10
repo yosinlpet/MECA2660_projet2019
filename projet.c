@@ -2,7 +2,7 @@
  * File              : projet.c
  * Author            : Denis N Dumoulin <denis.dumoulin@uclouvain.be>
  * Date              : 30.04.2019
- * Last Modified Date: 09.05.2019
+ * Last Modified Date: 10.05.2019
  */
 /**
  * File              : projet.c
@@ -32,13 +32,12 @@ int main(int argc, char *argv[]){
     PetscInitialize(&argc, &argv, 0, 0);
 
 	double Re = 250.;
-	/* double Pr = .7; */
-	/* double Sc = .1; */
+	double Pr = .7;
+	double Sc = .1;
 	double Gr = 2e5;
-	double CFL = .1;
-	double beta = .1;
-	unsigned long int nx1 = 8;
-	double tinf = 10;
+	double CFL = .05;
+	unsigned long int nx1 = 64;
+	double tinf = 50;
 
 	for (int i=1; i < argc; ++i)
 	{
@@ -73,10 +72,13 @@ int main(int argc, char *argv[]){
 	unsigned long int nx = 3*nx1 + 2;
 	unsigned long int ny = 6*nx1 + 2;
 	double nu = 1./Re;
-	/* double alpha = nu/Pr; */
-	/* double D = nu/Sc; */
+	double alpha = nu/Pr;
+	double D = nu/Sc;
 	double g = -9.81;
-	double Tm = Gr/beta/g*nu*nu;
+	double beta = Gr*nu*nu/g;
+	double k0 = 1e10*D;
+	double ER = 20;
+	double DH = 2*alpha/D;
 
 	double dt = CFL/hinv;
 
@@ -89,7 +91,12 @@ int main(int argc, char *argv[]){
 	data->ny = ny;
 	data->dt = dt;
 	data->nu = nu;
-	data->Tm = Tm;
+	data->alpha = alpha;
+	data->beta = beta;
+	data->DH = DH;
+	data->D = D;
+	data->k0 = k0;
+	data->ER = ER;
 	data->hinv = hinv;
 
 	Poisson_data *poisson = malloc(sizeof(Poisson_data));
@@ -105,22 +112,39 @@ int main(int argc, char *argv[]){
 	data->Ca = calloc(nx*ny, sizeof(double));
 	data->Cb = calloc(nx*ny, sizeof(double));
 
+	data->old_T = calloc(nx*ny, sizeof(double));
+	data->old_Ca = calloc(nx*ny, sizeof(double));
+	data->old_Cb = calloc(nx*ny, sizeof(double));
+
 	double *vgl = calloc(ny, sizeof(double));
 	double *u = data->u;
 	double *v = data->v;
+	double *T = data->T;
+	double *Ca = data->Ca;
 	double *old_u = data->old_u;
 	double *old_v = data->old_v;
+	double *old_T = data->old_T;
+	double *old_Ca = data->old_Ca;
+
+	unsigned long int i, j;
+	//Initialize atmosphere
+	for (i = 0; i < nx; ++i)
+		for (j = 0; j < ny; ++j)
+		{
+			T[i*ny + j] = .6;
+			Ca[i*ny + j] = .21;
+		}
 
 	//Initialize flow at the inlet
-	unsigned long int i, j;
 	for (j = nx1/4 + 1; j <= 5*nx1/4; ++j)
 	{
 		vgl[j] = -1.5*(1. - 4*pow(((double) (j-1))/hinv - .75, 2.))*sin(.25*M_PI); 
 		u[j] = 1.5*(1. - 4*pow(((double) (j-1) + .5)/hinv - .75, 2.))*cos(.25*M_PI); 
+		T[j]  = 1.;
 	}
 	impose_boundary(data);	
+	flow_conservation(data);
 	ghost_points(data, vgl);
-	/* flow_conservation(data); */
 
 	for (i = 0; i < nx; ++i)
 	{
@@ -128,6 +152,8 @@ int main(int argc, char *argv[]){
 		{
 			old_u[i*ny + j] = u[i*ny + j];
 			old_v[i*ny + j] = v[i*ny + j];
+			old_T[i*ny + j] = T[i*ny + j];
+			old_Ca[i*ny + j] = Ca[i*ny + j];
 		}
 	}
 
@@ -140,16 +166,23 @@ int main(int argc, char *argv[]){
 	{
 		printf("\n%f/%f\n", t, tinf);
 		step_one(data);
-		/* flow_conservation(data); */
-		logger(data, n);
+		flow_conservation(data);
 		poisson_solver(poisson, data);
 		reprojection(data);
+		if (n % 100 == 0)
+			logger(data, n);
+
+		temp(data);
+		concentration(data, 'a');
+		concentration(data, 'b');
+
 		impose_boundary(data);	
 		ghost_points(data, vgl);
 		++n;
 	}
 
 	//Free memory
+	free(vgl);
 	free_poisson_solver(poisson);
 	free(poisson);
     PetscFinalize();

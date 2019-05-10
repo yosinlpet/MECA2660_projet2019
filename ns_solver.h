@@ -2,7 +2,7 @@
  * File              : ns_solver.h
  * Author            : Denis N Dumoulin <denis.dumoulin@uclouvain.be>
  * Date              : 26.04.2019
- * Last Modified Date: 07.05.2019
+ * Last Modified Date: 10.05.2019
  */
 #include "poisson.h"
 
@@ -17,9 +17,13 @@ typedef struct {
 	double hinv;
 	double dt;
 	double nu;
+	double alpha;
+	double D;
+	double DH;
 	double g;
-	double Tm;
 	double beta;
+	double k0;
+	double ER;
 	
 	//quantities that matter
 	double *u;
@@ -31,8 +35,11 @@ typedef struct {
 	
 	//scalars
 	double *T;
+	double *old_T;
 	double *Ca;
+	double *old_Ca;
 	double *Cb;
+	double *old_Cb;
 } Data;
 
 void step_one(Data* data);
@@ -41,4 +48,7 @@ void impose_boundary(Data* data);
 void flow_conservation(Data *data);
 void free_data_structure(Data *data);
 void ghost_points(Data *data, double vgl[]);
+void temp(Data *data);
+void concentration(Data *data, char type);
+double k(Data *data, double T);
 #endif

@@ -1,12 +1,14 @@
 /** * File              : ns_solver.c
  * Author            : Denis N Dumoulin <denis.dumoulin@uclouvain.be>
  * Date              : 25.04.2019
- * Last Modified Date: 09.05.2019
+ * Last Modified Date: 10.05.2019
  */
 
 #include <stdlib.h>
+#include <math.h>
 #include "ns_solver.h"
 #include "poisson.h"
+
 void step_one(Data* data) {
 	unsigned long int nx = data->nx;
 	unsigned long int ny = data->ny;
@@ -16,7 +18,6 @@ void step_one(Data* data) {
 	double beta = data->beta;
 
 	double g = data->g;
-	double Tm = data->Tm;
 	double *T = data->T;
 
 	double *p = data->p;
@@ -86,7 +87,7 @@ void step_one(Data* data) {
 										  + vcopy[(i+1)*ny + j] + vcopy[(i-1)*ny + j]);
 
 			//Boussinesq
-			v[i*ny + j] -= 0.*beta*dt*(T[i*ny + j] - Tm)*g;
+			v[i*ny + j] -= beta*dt*(T[i*ny + j] - 1.)*g;
 		}
 	}
 
@@ -130,21 +131,65 @@ void reprojection(Data* data)
 void impose_boundary(Data* data)
 {
 	unsigned long int nx1 = data->nx1;
+	unsigned long int nx = data->nx;
 	unsigned long int ny = data->ny;
 
-	/* double dt = data->dt; */
-	/* double hinv = data->hinv; */
+	double alpha = data->alpha;
+	double D = data->D;
+	double DH = data->DH;
 
-	double *u = data->u;
+	double dt = data->dt;
+	double hinv = data->hinv;
+
 	double *v = data->v;
-	/* double *old_v = data->old_v; */
+	double *T = data->T;
+	double *Ca = data->Ca;
+	double *Cb = data->Cb;
 
-	unsigned long int i;
+	unsigned long int i, j;
+	for (j = 1; j < ny-1; ++j) 
+	{
+		//LEFT
+		if (j <= nx1/4 || j > 5*nx1/4)
+		{
+			T[j] = T[ny + j];
+			Ca[j] = Ca[ny + j];
+			Cb[j] = Cb[ny + j];
+		}
+
+		//RIGHT
+		T[(nx-1)*ny + j] = T[(nx-2)*ny + j];
+		Ca[(nx-1)*ny + j] = Ca[(nx-2)*ny + j];
+		Cb[(nx-1)*ny + j] = Cb[(nx-2)*ny + j];
+	}
+
+	double stuff = .5/(D*hinv);
+	for (i = 1; i < nx-1; ++i)
+	{
+		//BOT
+		Ca[i*ny] = (1.-stuff*k(data, T[i*ny]))*Ca[i*ny + 1]/(1. + stuff*k(data, T[i*ny]));
+		Cb[i*ny] = Cb[i*ny + 1] + k(data, T[i*ny])*stuff*(Ca[i*ny] + Ca[i*ny + 1]);
+		T[i*ny] = T[i*ny] + .5*DH*k(data, T[i*ny])*(Ca[i*ny] + Ca[i*ny + 1])/(alpha*hinv);
+
+		//TOP
+		T[i*ny + ny-1] = T[i*ny + ny-2];
+		Ca[i*ny + ny-1] = Ca[i*ny + ny-2];
+		Cb[i*ny + ny-1] = Cb[i*ny + ny-2];
+	}
+
 	for (i = 1 + nx1; i <= 2*nx1; ++i) //Don't forget the useless ghost points.
-		v[i*ny + ny-2] = u[i-3*nx1/4];
-		/* v[i*ny + ny-2] = old_v[i*ny + ny-2] - hinv*dt*(old_v[i*ny + ny-2] - old_v[i*ny + ny-3]); */
-		/* v[i*ny + ny-2] = old_v[i*ny + ny-2] - hinv*dt*(1.5*old_v[i*ny + ny-2] - 2*old_v[i*ny + ny-3] + .5*old_v[i*ny + ny-4]); */
-		/* v[i*ny + ny-2] = v[i*ny + ny-3]; */
+	{
+		//TOP
+		v[i*ny + ny-2] = v[i*ny + ny-2] - dt*hinv*(v[i*ny + ny-2] - v[i*ny + ny-3]);
+		T[i*ny + ny-1] = T[i*ny + ny-1] - dt*hinv*(T[i*ny + ny-1] - T[i*ny + ny-2]);
+		Ca[i*ny + ny-1] = Ca[i*ny + ny-1] - dt*hinv*(Ca[i*ny + ny-1] - Ca[i*ny + ny-2]);
+		Cb[i*ny + ny-1] = Cb[i*ny + ny-1] - dt*hinv*(Cb[i*ny + ny-1] - Cb[i*ny + ny-2]);
+	}
+}
+
+double k(Data *data, double T)
+{
+	return data->k0*exp(-data->ER/T);
 }
 
 void ghost_points(Data *data, double vgl[])
@@ -202,6 +247,101 @@ void flow_conservation(Data *data)
 		v[j*ny + ny-2] += dv;
 }
 
+void temp(Data *data)
+{
+	unsigned long int nx = data->nx;
+	unsigned long int ny = data->ny;
+
+	double alpha = data->alpha;
+	double dt = data->dt;
+	double hinv = data->hinv;
+
+	double *old_u = data->old_u;
+	double *old_v = data->old_v;
+	double *old_T = data->old_T;
+	double *u = data->u;
+	double *v = data->v;
+	double *T = data->T;
+	double *Tcopy = malloc(nx*ny*sizeof(double));
+
+	unsigned long int i, j;
+	for (i = 0; i < nx; ++i)
+		for (j = 0; j < ny; ++j)
+			Tcopy[i*ny + j] = T[i*ny + j];
+
+	for (i = 1; i < nx-1; ++i)
+		for (j = 1; j < ny-1; ++j)
+		{
+			T[i*ny + j] -= .375*dt*hinv*((u[i*ny + j] + u[(i-1)*ny + j])*(Tcopy[(i+1)*ny + j] - Tcopy[(i-1)*ny + j]) +
+										(v[i*ny + j] + v[i*ny + j-1])*(Tcopy[i*ny + j+1] - Tcopy[i*ny + j-1]));
+
+			T[i*ny + j] += .125*dt*hinv*((old_u[i*ny + j] + old_u[(i-1)*ny + j])*(old_T[(i+1)*ny + j] - old_T[(i-1)*ny + j]) +
+										(old_v[i*ny + j] + old_v[i*ny + j-1])*(old_T[i*ny + j+1] - old_T[i*ny + j-1]));
+
+			T[i*ny + j] +=  alpha*dt*hinv*hinv*(Tcopy[i*ny + j+1] - 4.*Tcopy[i*ny + j] + Tcopy[i*ny + j-1]
+										  + Tcopy[(i+1)*ny + j] + Tcopy[(i-1)*ny + j]);
+		}
+
+	for (i = 0; i < nx; ++i)
+		for (j = 0; j < ny; ++j)
+			old_T[i*ny + j] = Tcopy[i*ny + j];
+
+	free(Tcopy);
+}
+
+void concentration(Data *data, char type)
+{
+	unsigned long int nx = data->nx;
+	unsigned long int ny = data->ny;
+
+	double D = data->D;
+	double dt = data->dt;
+	double hinv = data->hinv;
+
+	double *old_u = data->old_u;
+	double *old_v = data->old_v;
+	double *u = data->u;
+	double *v = data->v;
+
+	double *C, *old_C;
+	if (type == 'a')
+	{
+		C = data->Ca;
+		old_C = data->old_Ca;
+	}
+	else
+	{
+		C = data->Cb;
+		old_C = data->old_Cb;
+	}
+
+	double *Ccopy = malloc(nx*ny*sizeof(double));
+
+	unsigned long int i, j;
+	for (i = 0; i < nx; ++i)
+		for (j = 0; j < ny; ++j)
+			Ccopy[i*ny + j] = C[i*ny + j];
+
+	for (i = 1; i < nx-1; ++i)
+		for (j = 1; j < ny-1; ++j)
+		{
+			C[i*ny + j] -= .375*dt*hinv*((u[i*ny + j] + u[(i-1)*ny + j])*(Ccopy[(i+1)*ny + j] - Ccopy[(i-1)*ny + j]) +
+										(v[i*ny + j] + v[i*ny + j-1])*(Ccopy[i*ny + j+1] - Ccopy[i*ny + j-1]));
+
+			C[i*ny + j] += .125*dt*hinv*((old_u[i*ny + j] + old_u[(i-1)*ny + j])*(old_C[(i+1)*ny + j] - old_C[(i-1)*ny + j]) +
+										(old_v[i*ny + j] + old_v[i*ny + j-1])*(old_C[i*ny + j+1] - old_C[i*ny + j-1]));
+
+			C[i*ny + j] +=  D*dt*hinv*hinv*(Ccopy[i*ny + j+1] - 4.*Ccopy[i*ny + j] + Ccopy[i*ny + j-1]
+										  + Ccopy[(i+1)*ny + j] + Ccopy[(i-1)*ny + j]);
+		}
+
+	for (i = 0; i < nx; ++i)
+		for (j = 0; j < ny; ++j)
+			old_C[i*ny + j] = Ccopy[i*ny + j];
+
+	free(Ccopy);
+}
+
 void free_data_structure(Data *data)
 {
 	free(data->u);
@@ -211,6 +351,9 @@ void free_data_structure(Data *data)
 	free(data->p);
 	free(data->phi);
 	free(data->T);
+	free(data->old_T);
 	free(data->Ca);
+	free(data->old_Ca);
 	free(data->Cb);
+	free(data->old_Cb);
 }
